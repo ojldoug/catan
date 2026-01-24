@@ -1,3 +1,6 @@
+Create virtual environment 'catan_backend_env' and install backend/requirements.txt to the venv
+
+
 How to Run:
 
 run backend:
