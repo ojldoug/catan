@@ -66,3 +66,11 @@ button:focus-visible {
     background-color: #f9f9f9;
   }
 }
+
+.hex-tile {
+  transition: transform 0.2s; /* smooth scaling */
+}
+
+.hex-tile:hover {
+  transform: scale(1.05); /* slightly enlarge on hover */
+}
