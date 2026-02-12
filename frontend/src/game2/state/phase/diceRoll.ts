@@ -1,13 +1,9 @@
 import type { GameState } from "../GameState";
 import type { GameAction } from "../GameAction";
 import type { ResourceType } from "../../StaticTypes/ResourceTypes";
+import { transferInState } from "../utils/resourceTransfer";
 
-
-export function diceRollReducer(
-  state: GameState,
-  action: GameAction
-): GameState {
-    //console.log("ENTER diceRollReducer", state.phase, action);
+export function diceRollReducer(state: GameState, action: GameAction): GameState {
   switch (action.type) {
     case "ROLL_DICE": {
       if (state.phase !== "dice_roll") return state;
@@ -20,7 +16,6 @@ export function diceRollReducer(
         const turnOrder = state.turnOrder;
         const currentIndex = turnOrder.indexOf(state.currentPlayer);
 
-        // Rotate turn order so currentPlayer is first
         const orderedPlayers = [
           ...turnOrder.slice(currentIndex),
           ...turnOrder.slice(0, currentIndex),
@@ -31,10 +26,7 @@ export function diceRollReducer(
 
         for (const playerId of orderedPlayers) {
           const player = state.playerState[playerId];
-          const total = Object.values(player.resources).reduce(
-            (a, b) => a + b,
-            0
-          );
+          const total = Object.values(player.resources).reduce((a, b) => a + b, 0);
 
           if (total >= 8) {
             discardAmounts[playerId] = Math.floor(total / 2);
@@ -45,6 +37,8 @@ export function diceRollReducer(
         return {
           ...state,
           phase: "robber",
+          diceRolled: true,
+          lastRoll: roll,
           robberState: {
             step: pendingDiscards.length > 0 ? "discard" : "move",
             pendingDiscards,
@@ -56,13 +50,26 @@ export function diceRollReducer(
         };
       }
 
-      // 🪵 RESOURCE DISTRIBUTION
-      const updatedPlayerState = { ...state.playerState };
+      // ==============================
+      // DISTRIBUTE RESOURCES (deterministic one-card-at-a-time)
+      // ==============================
+      let nextState: GameState = state;
 
+      // resource -> playerId -> amount owed
+      const demand: Record<ResourceType, Record<string, number>> = {
+        wood: {},
+        brick: {},
+        sheep: {},
+        wheat: {},
+        ore: {},
+      };
+
+      // Build demand from tiles matching roll
       for (const tile of Object.values(state.board.tiles)) {
         if (tile.token !== roll) continue;
         if (!tile.resource) continue;
         if (tile.id === state.robberTileId) continue;
+        if (tile.resource === "sea" || tile.resource === "desert") continue;
 
         const resource = tile.resource as ResourceType;
 
@@ -73,26 +80,62 @@ export function diceRollReducer(
           const owner = vState.ownerId;
           if (!owner) continue;
 
-          const payout =
-            vState.building === "city" ? 2 : 1;
+          const payout = vState.building === "city" ? 2 : 1;
+          demand[resource][owner] = (demand[resource][owner] ?? 0) + payout;
+        }
+      }
 
-          const player = updatedPlayerState[owner];
+      // Priority order starting at current player (deterministic)
+      const order = state.turnOrder;
+      const startIdx = state.currentPlayerIndex;
+      const priorityOrder = [...order.slice(startIdx), ...order.slice(0, startIdx)];
 
-          updatedPlayerState[owner] = {
-            ...player,
-            resources: {
-              ...player.resources,
-              [resource]: player.resources[resource] + payout,
-            },
-          };
+      // For each resource, pay out one card at a time in priority order
+      for (const resource of Object.keys(demand) as ResourceType[]) {
+        const owed = { ...demand[resource] };
+        const playersOwed = Object.keys(owed);
+        if (playersOwed.length === 0) continue;
+
+        // Loop until bank is empty for this resource or everyone is satisfied
+        // We cycle through priorityOrder repeatedly.
+        while (nextState.bank[resource] > 0) {
+          let paidSomeoneThisCycle = false;
+
+          for (const p of priorityOrder) {
+            if (nextState.bank[resource] <= 0) break;
+
+            const remaining = owed[p] ?? 0;
+            if (remaining <= 0) continue;
+
+            const transferred = transferInState(
+              nextState,
+              { type: "bank" },
+              { type: "player", playerId: p },
+              { [resource]: 1 }
+            );
+
+            // If transfer fails, bank is effectively empty/blocked for some reason
+            if (!transferred) {
+              // stop paying this resource
+              paidSomeoneThisCycle = false;
+              break;
+            }
+
+            nextState = transferred;
+            owed[p] = remaining - 1;
+            paidSomeoneThisCycle = true;
+          }
+
+          // If we went through the whole priority list and nobody was owed anything,
+          // we're done for this resource.
+          if (!paidSomeoneThisCycle) break;
         }
       }
 
       return {
-        ...state,
+        ...nextState,
         diceRolled: true,
         lastRoll: roll,
-        playerState: updatedPlayerState,
         phase: "building_trading",
       };
     }

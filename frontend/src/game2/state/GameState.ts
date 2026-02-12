@@ -7,6 +7,7 @@ import type { Vertex } from "../StaticTypes/Vertex";
 import type { Edge } from "../StaticTypes/Edge";
 import type { Node } from "../StaticTypes/Node";
 import type { ResourceType } from "../StaticTypes/ResourceTypes";
+import type { DevCardType } from "../StaticTypes/DevCardTypes";
 //import type { Player } from "../player/types/Player";
 //import type { ResourceType } from "../general/types/ResourceType";
 
@@ -63,13 +64,8 @@ export interface PlayerState {
     any: boolean;            // 3:1 generic port
   };
 
-  devCards: {
-    knight: number;
-    monopoly: number;
-    roadBuilding: number;
-    yearOfPlenty: number;
-    victoryPoint: number;
-  };
+  devCards: Record<DevCardType, number>;
+
 }
 
 // ---------------------------------------------
@@ -80,8 +76,24 @@ export type GamePhase =
   | "setup"
   | "dice_roll"
   | "robber"
-  | "building_trading";
+  | "building_trading"
+  | "dev_card_action"
+  | "game_over";
 
+
+// ---------------------------------------------
+// BANK STATE
+// ---------------------------------------------
+
+export type BankResources = Record<ResourceType, number>;
+
+export const INITIAL_BANK_RESOURCES: BankResources = {
+  wood: 19,
+  brick: 19,
+  sheep: 19,
+  wheat: 19,
+  ore: 19,
+};
 
 // ---------------------------------------------
 // ROBBER STATE DURING "robber" PHASE
@@ -96,7 +108,15 @@ export interface RobberState {
   originalRoller: string; // playerId who rolled the 7
 }
 
+// ---------------------------------------------
+// DEV ACTION STATE
+// ---------------------------------------------
 
+export type DevCardActionState =
+  | { type: "road_building"; roadsRemaining: number }
+  | { type: "monopoly_select" }
+  | { type: "year_of_plenty_select" };
+  
 // ---------------------------------------------
 // FULL GAME STATE
 // ---------------------------------------------
@@ -125,9 +145,10 @@ export interface GameState {
   setupTurn: 0 | 1;
   setupStep: "settlement" | "road";
 
-  // dice
+  // dice/cards
   lastRoll: number | null;
   diceRolled: boolean;
+  bank: BankResources;
 
   // build
   buildTradeMode: "none" | "road" | "settlement" | "city" | "bank";
@@ -135,4 +156,12 @@ export interface GameState {
   // robber
   robberState: RobberState | null;
   robberTileId: string;
+
+  // dev cards
+  devDeck: DevCardType[];
+  devCardActionState: DevCardActionState | null;
+  devCardPlayedThisTurn: boolean;
+
+  // vp
+  winner: string | null;
 }

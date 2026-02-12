@@ -1,94 +1,27 @@
 import type { GameState, PlayerState } from "../GameState";
 import type { GameAction } from "../GameAction";
-import type { PlayerResources } from "../GameState";
 import type { ResourceType } from "../../StaticTypes/ResourceTypes";
-import { grantPortsForVertex, isBuildableLandEdge, isBuildableLandVertex } from "../../board/rules/placementRules";
+import { grantPortsForVertex, isBuildableLandVertex } from "../../board/rules/placementRules";
+import { checkForWinner } from "../utils/checkForWinner";
+import { canBuild, BUILD_COSTS } from "../utils/buildRequirements";
+import { placeRoad } from "../../board/rules/roadPlacement";
 
-
-const BUILD_COSTS = {
-  settlement: {
-    wood: 1,
-    brick: 1,
-    sheep: 1,
-    wheat: 1,
-  },
-  road: {
-    wood: 1,
-    brick: 1,
-  },
-  city: {
-    wheat: 2,
-    ore: 3,
-  },
-} as const;
-
-
-type ResourceCost = Partial<Record<ResourceType, number>>;
-
-// BUILD FUNCTIONS
-
-function hasResources(
-  resources: PlayerResources,
-  cost: ResourceCost
-): boolean {
-  return (Object.keys(cost) as ResourceType[]).every(
-    (r) => resources[r] >= (cost[r] ?? 0)
-  );
-}
-
-
-function payResources(
-  resources: PlayerResources,
-  cost: ResourceCost
-): PlayerResources {
-  const updated: PlayerResources = { ...resources };
-
-  (Object.keys(cost) as ResourceType[]).forEach((r) => {
-    updated[r] -= cost[r] ?? 0;
-  });
-
-  return updated;
-}
+// ✅ NEW: finite-bank transfers
+import { transferInState, exchangeInState } from "../utils/resourceTransfer";
 
 // TRADE FUNCTIONS
 function getTradeRatio(player: PlayerState, resource: ResourceType): number {
-  if (player.ports[resource]) return 2;    // specific 2:1 port
-  if (player.ports.any) return 3;          // generic 3:1 port
-  return 4;                                 // default bank trade
+  if (player.ports[resource]) return 2; // specific 2:1 port
+  if (player.ports.any) return 3;       // generic 3:1 port
+  return 4;                              // default bank trade
 }
 
-function performBankTrade(
-  player: PlayerState,
-  give: ResourceType,
-  receive: ResourceType
-): PlayerState {
-  const ratio = getTradeRatio(player, give);
-
-  if (player.resources[give] < ratio) return player; // not enough to trade
-
-  return {
-    ...player,
-    resources: {
-      ...player.resources,
-      [give]: player.resources[give] - ratio,
-      [receive]: player.resources[receive] + 1,
-    },
-  };
-}
-
-
-
-//REDUCER
-export function buildReducer(
-  state: GameState,
-  action: GameAction
-): GameState {
+// REDUCER
+export function buildReducer(state: GameState, action: GameAction): GameState {
   if (state.phase !== "building_trading") return state;
 
   const playerId = state.currentPlayer;
   const player = state.playerState[playerId];
-
-  
 
   switch (action.type) {
     case "SET_BUILD_TRADE_MODE":
@@ -105,46 +38,61 @@ export function buildReducer(
       const vertex = state.board.vertices[vId];
       if (!vertex || !isBuildableLandVertex(vertex, state.board.tiles)) return state;
 
+      // ======================
       // BUILD CITY
+      // ======================
       if (state.buildTradeMode === "city") {
-        if (
-          vState.ownerId === playerId &&
-          vState.building === "settlement"
-        ) {
-          if (!hasResources(player.resources, BUILD_COSTS.city)) return state;
+        if (vState.ownerId === playerId && vState.building === "settlement") {
+          if (!canBuild(player, "city")) return state;
 
-          return {
-            ...state,
+          // ✅ Pay cost: player -> bank (finite resources, no burning)
+          const paid = transferInState(
+            state,
+            { type: "player", playerId },
+            { type: "bank" },
+            BUILD_COSTS.city
+          );
+          if (!paid) return state;
+
+          const paidPlayer = paid.playerState[playerId];
+
+          const newState: GameState = {
+            ...paid,
             vertexState: {
-              ...state.vertexState,
+              ...paid.vertexState,
               [vId]: { building: "city", ownerId: playerId },
             },
             playerState: {
-              ...state.playerState,
+              ...paid.playerState,
               [playerId]: {
-                ...player,
-                resources: payResources(player.resources, BUILD_COSTS.city),
-                settlements: player.settlements.filter(id => id !== vId),
-                cities: [...player.cities, vId],
+                ...paidPlayer,
+                settlements: paidPlayer.settlements.filter(id => id !== vId),
+                cities: [...paidPlayer.cities, vId],
               },
             },
           };
+
+          const winner = checkForWinner(newState);
+          if (winner) return { ...newState, phase: "game_over", winner };
+
+          return newState;
         }
+
+        return state;
       }
 
+      // ======================
       // BUILD SETTLEMENT
+      // ======================
       if (state.buildTradeMode !== "settlement") return state;
       if (vState.building !== "none") return state;
-      if (!hasResources(player.resources, BUILD_COSTS.settlement)) return state;
+      if (!canBuild(player, "settlement")) return state;
 
       // ❌ DISTANCE RULE — no adjacent settlements or cities
-      const adjacentOccupied = state.board.vertices[vId].adjacentVertices.some(
-        (adjId) => {
-          const adjState = state.vertexState[adjId];
-          return adjState && adjState.building !== "none";
-        }
-      );
-
+      const adjacentOccupied = state.board.vertices[vId].adjacentVertices.some((adjId) => {
+        const adjState = state.vertexState[adjId];
+        return adjState && adjState.building !== "none";
+      });
       if (adjacentOccupied) return state;
 
       // must touch own road
@@ -153,99 +101,142 @@ export function buildReducer(
           edge.Vertex_IDs.includes(vId) &&
           state.edgeState[edge.id]?.ownerId === playerId
       );
-
       if (!touchesOwnRoad) return state;
 
-      return {
-        ...state,
+      // ✅ Pay cost: player -> bank
+      const paid = transferInState(
+        state,
+        { type: "player", playerId },
+        { type: "bank" },
+        BUILD_COSTS.settlement
+      );
+      if (!paid) return state;
+
+      const paidPlayer = paid.playerState[playerId];
+
+      const newState: GameState = {
+        ...paid,
         vertexState: {
-          ...state.vertexState,
+          ...paid.vertexState,
           [vId]: { building: "settlement", ownerId: playerId },
         },
         playerState: {
-          ...state.playerState,
+          ...paid.playerState,
           [playerId]: grantPortsForVertex(
             {
-              ...player,
-              resources: payResources(player.resources, BUILD_COSTS.settlement),
-              settlements: [...player.settlements, vId],
+              ...paidPlayer,
+              settlements: [...paidPlayer.settlements, vId],
             },
             vId,
-            state.board
+            paid.board
           ),
         },
       };
 
+      const winner = checkForWinner(newState);
+      if (winner) return { ...newState, phase: "game_over", winner };
+
+      return newState;
     }
 
     case "EDGE_CLICKED": {
       if (state.buildTradeMode !== "road") return state;
-      
-      const eId = action.edgeId;
-      const eState = state.edgeState[eId];
-      const edge = state.board.edges[eId];
+      if (!canBuild(player, "road")) return state;
 
-      if (!isBuildableLandEdge(edge, state.board.tiles)) return state;
-      if (!edge || eState.ownerId !== null) return state;
-      if (!hasResources(player.resources, BUILD_COSTS.road)) return state;
+      // ✅ Pay first (player -> bank), then place road (atomic-ish; payment doesn't affect placement validity)
+      const paid = transferInState(
+        state,
+        { type: "player", playerId },
+        { type: "bank" },
+        BUILD_COSTS.road
+      );
+      if (!paid) return state;
 
-      const [v1, v2] = edge.Vertex_IDs;
-      const touchesNetwork =
-        state.vertexState[v1]?.ownerId === playerId ||
-        state.vertexState[v2]?.ownerId === playerId ||
-        player.roads.some(rid =>
-          state.board.edges[rid].Vertex_IDs.includes(v1) ||
-          state.board.edges[rid].Vertex_IDs.includes(v2)
-        );
+      const placed = placeRoad(paid, playerId, action.edgeId);
+      if (!placed) return state;
 
-      if (!touchesNetwork) return state;
+      return placed;
+    }
 
-      return {
-        ...state,
-        edgeState: {
-          ...state.edgeState,
-          [eId]: { ownerId: playerId },
-        },
+    // ======================
+    // BUY DEV CARD
+    // ======================
+    case "BUY_DEV_CARD": {
+      if (!canBuild(player, "devCard")) return state;
+
+      // ✅ Pay cost: player -> bank
+      const paid = transferInState(
+        state,
+        { type: "player", playerId },
+        { type: "bank" },
+        BUILD_COSTS.devCard
+      );
+      if (!paid) return state;
+
+      const [drawnCard, ...restDeck] = paid.devDeck;
+      if (!drawnCard) return state; // no cards left (you might choose to refund; current behavior is "can't buy")
+
+      const paidPlayer = paid.playerState[playerId];
+
+      const updatedPlayerCards = {
+        ...paidPlayer.devCards,
+        [drawnCard]: (paidPlayer.devCards[drawnCard] || 0) + 1,
+      };
+
+      const newState: GameState = {
+        ...paid,
+        devDeck: restDeck,
         playerState: {
-          ...state.playerState,
+          ...paid.playerState,
           [playerId]: {
-            ...player,
-            resources: payResources(player.resources, BUILD_COSTS.road),
-            roads: [...player.roads, eId],
+            ...paidPlayer,
+            devCards: updatedPlayerCards,
           },
         },
       };
+
+      // ✅ Only VP cards can immediately win on draw
+      if (drawnCard === "victoryPoint") {
+        const winner = checkForWinner(newState);
+        if (winner) return { ...newState, phase: "game_over", winner };
+      }
+
+      return newState;
     }
 
-    // TRADING ACTIONS
-
-    // BANK TRADE
-
+    // ======================
+    // BANK / PORT TRADE
+    // ======================
     case "BANK_TRADE": {
       const { give, receive } = action;
-      const updatedPlayer = performBankTrade(player, give, receive);
+      const ratio = getTradeRatio(player, give);
 
-      return {
-        ...state,
-        playerState: {
-          ...state.playerState,
-          [playerId]: updatedPlayer,
-        },
-      };
+      const next = exchangeInState(
+        state,
+        { type: "player", playerId },
+        { type: "bank" },
+        { [give]: ratio },  // player pays ratio to bank
+        { [receive]: 1 }    // bank pays 1 to player
+      );
+
+      // If player can't pay or bank can't supply, do nothing
+      if (!next) return state;
+
+      return next;
     }
-
 
     // END TURN
     case "END_TURN": {
-      const nextIndex =
-        (state.currentPlayerIndex + 1) % state.turnOrder.length;
+      const nextIndex = (state.currentPlayerIndex + 1) % state.turnOrder.length;
+      const nextPlayerId = state.turnOrder[nextIndex];
 
       return {
         ...state,
         currentPlayerIndex: nextIndex,
-        currentPlayer: state.turnOrder[nextIndex],
+        currentPlayer: nextPlayerId,
         phase: "dice_roll",
         diceRolled: false,
+        devCardPlayedThisTurn: false,
       };
     }
 

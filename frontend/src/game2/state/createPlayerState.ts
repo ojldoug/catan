@@ -1,3 +1,4 @@
+import type { DevCardType } from "../StaticTypes/DevCardTypes";
 import type { PlayerState } from "./GameState";
 
 const PLAYER_COLORS: Record<string, string> = {
@@ -6,6 +7,16 @@ const PLAYER_COLORS: Record<string, string> = {
   player3: "green",
   player4: "pink",
 };
+
+function emptyDevCards(): Record<DevCardType, number> {
+  return {
+    knight: 0,
+    monopoly: 0,
+    roadBuilding: 0,
+    yearOfPlenty: 0,
+    victoryPoint: 0,
+  };
+}
 
 export function createPlayerState(playerId: string): PlayerState {
   return {
@@ -26,12 +37,8 @@ export function createPlayerState(playerId: string): PlayerState {
       any: false,            // 3:1 generic port
     },
 
-    devCards: {
-      knight: 0,
-      monopoly: 0,
-      roadBuilding: 0,
-      yearOfPlenty: 0,
-      victoryPoint: 0,
-    },
+    devCardPurchasedThisTurn: false,
+    devCards: emptyDevCards(),
+
   };
 }

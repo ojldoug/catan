@@ -5,32 +5,14 @@ import type { Node } from "./game2/StaticTypes/Node";
 import { Board } from "./components2/board/Board";
 import { useReducer } from "react";
 import { gameReducer } from "./game2/state/GameReducer";
-import { useEffect } from "react";
-import type { GameState } from "./game2/state/GameState";
 import { DiscardResources } from "./components2/robber/DiscardResources";
 import { BankTrade } from "./components2/trade/BankTrade";
-// import { useState } from "react";
-
-// Helper functions to check if player can afford to build
-function canAffordSettlement(state: GameState): boolean {
-  const r = state.playerState[state.currentPlayer].resources;
-  return (
-    r.wood >= 1 &&
-    r.brick >= 1 &&
-    r.sheep >= 1 &&
-    r.wheat >= 1
-  );
-}
-
-function canAffordRoad(state: GameState): boolean {
-  const r = state.playerState[state.currentPlayer].resources;
-  return r.wood >= 1 && r.brick >= 1;
-}
-
-function canAffordCity(state: GameState): boolean {
-  const r = state.playerState[state.currentPlayer].resources;
-  return r.wheat >= 2 && r.ore >= 3;
-}
+import { totalVP, visibleVP } from "./game2/state/utils/calculateVP";
+import { canBuild } from "./game2/state/utils/buildRequirements"
+import { canMakeAnyBankTrade } from "./game2/state/utils/tradeUtils";
+import { PlayerDevCards } from "./components2/devCards/PlayerDevCards";
+import { MonopolySelect } from "./components2/devCards/MonopolySelect";
+import { YearOfPlentySelect } from "./components2/devCards/YearOfPlentySelect";
 
 
 export default function HomePage() {
@@ -38,7 +20,7 @@ export default function HomePage() {
   const maps = initialiseMap();
 
   // 2. Create full game state
-  const initialGameState = initialiseGameState(maps, ["player1", "player2", "player3"]);
+  const initialGameState = initialiseGameState(maps, ["player1", "player2"]);
 
   const [gameState, dispatch] = useReducer(
     gameReducer,
@@ -67,26 +49,16 @@ export default function HomePage() {
       Math.floor(Math.random() * 6) + 1 +
       Math.floor(Math.random() * 6) + 1;
 
-    console.log("🎲 DICE ROLLED:", roll);
-
     dispatch({
       type: "ROLL_DICE",
       roll,
     });
   };
 
-
-  useEffect(() => {
-    console.log("vertexState changed:", gameState.vertexState);
-  }, [gameState.vertexState]);
-
-  useEffect(() => {
-    console.log("edgeState changed:", gameState.edgeState);
-  }, [gameState.edgeState]);
-
   const currentPlayerId = gameState.currentPlayer;
   const currentPlayer = gameState.playerState[currentPlayerId];
   const resources = currentPlayer.resources;
+  const bankResources = gameState.bank;
 
   return (
     <main>
@@ -94,27 +66,86 @@ export default function HomePage() {
         Current player: <b>{currentPlayerId}</b>
       </div>
 
-      {/* 👇 RESOURCE DISPLAY */}
+      <div style={{ marginBottom: 10 }}>
+        VP: <b>{totalVP(currentPlayer, gameState)}</b>, visible: <b>{visibleVP(currentPlayer, gameState)}</b>
+      </div>
+
+      {/* RESOURCE DISPLAY */}
       <div style={{ marginBottom: 20 }}>
         <b>Resources:</b>
         <div style={{ display: "flex", gap: 12, marginTop: 4 }}>
-          <div>🌲 Wood: {resources.wood}</div>
-          <div>🧱 Brick: {resources.brick}</div>
-          <div>🐑 Sheep: {resources.sheep}</div>
-          <div>🌾 Wheat: {resources.wheat}</div>
-          <div>⛰ Ore: {resources.ore}</div>
+          <div>🌲: {resources.wood}</div>
+          <div>🧱: {resources.brick}</div>
+          <div>🐑: {resources.sheep}</div>
+          <div>🌾: {resources.wheat}</div>
+          <div>⛰: {resources.ore}</div>
         </div>
       </div>
 
-      
+      {/* BANK RESOURCE DISPLAY */} 
+      <div style={{ marginBottom: 20 }}>
+        <b>Bank Resources:</b>
+        <div style={{ display: "flex", gap: 12, marginTop: 4 }}>
+          <div>🌲: {bankResources.wood}</div>
+          <div>🧱: {bankResources.brick}</div>
+          <div>🐑: {bankResources.sheep}</div>
+          <div>🌾: {bankResources.wheat}</div>
+          <div>⛰: {bankResources.ore}</div>
+        </div>
+      </div>
+
+      {/* DEV CARD BUTTONS */} 
+      <div style={{ marginTop: 12 }}>
+        <b>Dev Cards:</b>
+        <PlayerDevCards
+          devCardsOwned={currentPlayer.devCards}
+          onPlay={(type) => {
+            switch (type) {
+              case "knight":
+                dispatch({ type: "PLAY_KNIGHT" });
+                break;
+              case "monopoly":
+                dispatch({ type: "PLAY_MONOPOLY" });
+                break;
+              case "roadBuilding":
+                dispatch({ type: "PLAY_ROAD_BUILDING" });
+                break;
+              case "yearOfPlenty":
+                dispatch({ type: "PLAY_YEAR_OF_PLENTY" });
+                break;
+            }
+          }}
+        />
+      </div>
 
       <div>
         Last roll: {gameState.lastRoll ?? "-"}
       </div>
+
       <div>PHASE: {gameState.phase}</div>
 
+      {gameState.devCardActionState?.type === "monopoly_select" && (
+        <MonopolySelect
+          title="Monopoly: choose a resource"
+          onSelect={(resource) => dispatch({ type: "SELECT_MONOPOLY_RESOURCE", resource })}
+          onClose={() => {
+            // Optional: you can disallow cancel by omitting onClose
+            // If you *do* allow cancel, you need a CANCEL action and potentially refund the card.
+          }}
+        />
+      )}
+
+      {gameState.devCardActionState?.type === "year_of_plenty_select" && (
+        <YearOfPlentySelect
+          bankResources={gameState.bank}
+          onConfirm={(resources) =>
+            dispatch({ type: "SELECT_YEAR_OF_PLENTY_RESOURCES", resources })
+          }
+        />
+      )}
+
       
-      
+      {/* ROBBER DEBUG */}
       {gameState.phase === "robber" && gameState.robberState && (
         <div
           style={{
@@ -175,7 +206,6 @@ export default function HomePage() {
       )}
 
 
-
       {/* DICE ROLL BUTTON */}
       {gameState.phase === "dice_roll" && !gameState.diceRolled && (
         <button
@@ -195,27 +225,37 @@ export default function HomePage() {
           </button>
 
           <button
-            disabled={!canAffordSettlement(gameState)}
+            disabled={!canBuild(gameState.playerState[gameState.currentPlayer], "settlement")}
             onClick={() => dispatch({ type: "SET_BUILD_TRADE_MODE", mode: "settlement" })}
           >
             Build Settlement
           </button>
 
           <button
-            disabled={!canAffordRoad(gameState)}
+            disabled={!canBuild(gameState.playerState[gameState.currentPlayer], "road")}
             onClick={() => dispatch({ type: "SET_BUILD_TRADE_MODE", mode: "road" })}
           >
             Build Road
           </button>
 
           <button
-            disabled={!canAffordCity(gameState)}
+            disabled={!canBuild(gameState.playerState[gameState.currentPlayer], "city")}
             onClick={() => dispatch({ type: "SET_BUILD_TRADE_MODE", mode: "city" })}
           >
             Build City
           </button>
 
           <button
+            disabled={
+              !canBuild(gameState.playerState[gameState.currentPlayer], "devCard") 
+            }
+            onClick={() => dispatch({ type: "BUY_DEV_CARD" })}
+          >
+            Buy Dev Card (VP)
+          </button>
+
+          <button
+            disabled={!canMakeAnyBankTrade(gameState.playerState[gameState.currentPlayer])}
             onClick={() => dispatch({ type: "SET_BUILD_TRADE_MODE", mode: "bank" })}
           >
             Bank Trade
@@ -265,11 +305,19 @@ export default function HomePage() {
       )}
 
 
-
-
-      {gameState.phase === "robber" && gameState.robberState?.step === "move" && (
-        <div style={{ position: "absolute", top: 10, left: 10, zIndex: 100 }}>
-          Click a tile to move the robber
+      {gameState.phase === "game_over" && gameState.winner && (
+        <div style={{
+          position: "absolute",
+          top: 20,
+          left: "50%",
+          transform: "translateX(-50%)",
+          background: "gold",
+          padding: "12px 24px",
+          borderRadius: 8,
+          fontSize: 24,
+          fontWeight: "bold"
+        }}>
+          🎉 Player {gameState.winner} Wins!
         </div>
       )}
 

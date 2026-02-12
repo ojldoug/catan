@@ -1,7 +1,11 @@
 import type { GameState } from "../GameState";
 import type { GameAction } from "../GameAction";
-import { grantPortsForVertex, isBuildableLandVertex, isBuildableLandEdge } from "../../board/rules/placementRules";
-
+import {
+  grantPortsForVertex,
+  isBuildableLandVertex,
+  isBuildableLandEdge,
+} from "../../board/rules/placementRules";
+import { transferInState } from "../utils/resourceTransfer"; // ✅ changed
 
 /**
  * Setup phase reducer
@@ -11,12 +15,8 @@ import { grantPortsForVertex, isBuildableLandVertex, isBuildableLandEdge } from 
  *  - advancing setup turn (forward then reverse)
  */
 
-export function setupReducer(
-  state: GameState,
-  action: GameAction
-): GameState {
+export function setupReducer(state: GameState, action: GameAction): GameState {
   switch (action.type) {
-
     case "PLACE_SETTLEMENT": {
       const { vertexId } = action;
       const currentPlayer = state.currentPlayer;
@@ -40,28 +40,37 @@ export function setupReducer(
       // ----------------------------------
       // STARTING RESOURCES (2nd settlement)
       // ----------------------------------
-      let updatedResources = state.playerState[currentPlayer].resources;
+      let nextState = state;
 
       if (state.setupTurn === 1) {
-        updatedResources = { ...updatedResources };
-
         for (const tileId of vertex.adjacentTiles) {
-          const tile = state.board.tiles[tileId];
+          const tile = nextState.board.tiles[tileId];
           if (!tile) continue;
 
           const resource = tile.resource;
           if (resource === "sea" || resource === "desert") continue;
 
-          updatedResources[resource] =
-            (updatedResources[resource] ?? 0) + 1;
+          const transferred = transferInState(
+            nextState,
+            { type: "bank" },
+            { type: "player", playerId: currentPlayer },
+            { [resource]: 1 }
+          );
+
+          // If bank had the card, apply the transfer; otherwise skip
+          if (transferred) nextState = transferred;
         }
       }
 
+      // IMPORTANT:
+      // from here on, use nextState (it contains any bank/player updates)
+      const updatedPlayer = nextState.playerState[currentPlayer];
+
       return {
-        ...state,
+        ...nextState,
 
         vertexState: {
-          ...state.vertexState,
+          ...nextState.vertexState,
           [vertexId]: {
             building: "settlement",
             ownerId: currentPlayer,
@@ -69,18 +78,14 @@ export function setupReducer(
         },
 
         playerState: {
-          ...state.playerState,
+          ...nextState.playerState,
           [currentPlayer]: grantPortsForVertex(
             {
-              ...state.playerState[currentPlayer],
-              resources: updatedResources,
-              settlements: [
-                ...state.playerState[currentPlayer].settlements,
-                vertexId,
-              ],
+              ...updatedPlayer,
+              settlements: [...updatedPlayer.settlements, vertexId],
             },
             vertexId,
-            state.board
+            nextState.board
           ),
         },
 
@@ -88,17 +93,23 @@ export function setupReducer(
       };
     }
 
-
     case "PLACE_ROAD": {
       const { edgeId } = action;
       const playerId = state.currentPlayer;
       const edge = state.board.edges[edgeId];
-
       const edgeState = state.edgeState[edgeId];
+      if (!edgeState || edgeState.ownerId !== null) return state;
+      if (!isBuildableLandEdge(edge, state.board.tiles)) return state;
+
+      const lastSettlementId = state.playerState[playerId].settlements.at(-1);
+      if (!lastSettlementId) return state;
+
+      // enforce adjacency rule for setup
+      if (!edge.Vertex_IDs.includes(lastSettlementId)) return state;
+
       if (!edgeState || edgeState.ownerId !== null) return state;
 
       if (!isBuildableLandEdge(edge, state.board.tiles)) return state;
-  
 
       const order = state.turnOrder;
       const idx = state.currentPlayerIndex;
@@ -160,12 +171,10 @@ export function setupReducer(
       };
     }
 
-
     case "VERTEX_CLICKED": {
       console.log("SETUP REDUCER VERTEX_CLICKED", action.vertexId);
       if (state.setupStep !== "settlement") return state;
 
-      // reuse existing logic
       return setupReducer(state, {
         type: "PLACE_SETTLEMENT",
         vertexId: action.vertexId,
@@ -180,7 +189,6 @@ export function setupReducer(
         edgeId: action.edgeId,
       });
     }
-
 
     default:
       return state;
